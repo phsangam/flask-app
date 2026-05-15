@@ -9,7 +9,7 @@ pipeline {
         AWS_REGION     = 'ap-south-2'
         AWS_ACCOUNT_ID = '569085067591'
         ECR_REPO       = '569085067591.dkr.ecr.ap-south-2.amazonaws.com/flask-app'
-        IMAGE_TAG      = "${GIT_COMMIT[0..7]}"
+        IMAGE_TAG = "${GIT_COMMIT.take(7)}"
         KUBECONFIG     = credentials('kubeconfig')
     }
 
@@ -118,13 +118,14 @@ pipeline {
     }
 
     post {
-        success {
-            echo "Pipeline SUCCESS — Image: ${ECR_REPO}:${IMAGE_TAG}"
-        }
-        failure {
-            echo "Pipeline FAILED — check stage logs above"
-        }
-        always {
+    success {
+        echo "Pipeline SUCCESS — Image: ${ECR_REPO}:${IMAGE_TAG}"
+    }
+    failure {
+        echo "Pipeline FAILED — check stage logs above"
+    }
+    always {
+        node('built-in') {
             sh 'docker rmi ${ECR_REPO}:${IMAGE_TAG} || true'
             cleanWs()
         }
