@@ -1,0 +1,7 @@
+# Checkov config - security scan for terraform
+compact: true
+quiet: false
+framework:
+  - terraform
+skip-check:
+  - CKV_AWS_51  # skip ECR image tag immutability for demo

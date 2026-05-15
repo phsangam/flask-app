@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+venv/
+.coverage
+coverage.xml
+*.tfplan
+.terraform/
+*.tfstate
+*.tfstate.backup
+.env

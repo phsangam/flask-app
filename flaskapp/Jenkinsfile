@@ -1,0 +1,138 @@
+#Jenkinsfile
+
+pipeline {
+    agent any
+
+    environment {
+    AWS_REGION     = 'ap-south-2'
+    AWS_ACCOUNT_ID = '569085067591'
+    ECR_REPO       = '569085067591.dkr.ecr.ap-south-2.amazonaws.com/flask-app'
+    IMAGE_TAG      = "${GIT_COMMIT[0..7]}"
+    KUBECONFIG     = credentials('kubeconfig')
+}
+
+    stages {
+
+        // ── Stage 1: Checkout ─────────────────────────────────
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    url: 'https://github.com/phsangam/flask-app.git'
+                echo "Branch: ${GIT_BRANCH} | Commit: ${IMAGE_TAG}"
+            }
+        }
+
+        // ── Stage 2: Install Dependencies ─────────────────────
+        stage('Install Dependencies') {
+            steps {
+                sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install -r requirements.txt
+                '''
+            }
+        }
+
+        // ── Stage 3: Unit Tests ───────────────────────────────
+        stage('Unit Tests') {
+            steps {
+                sh '''
+                    . venv/bin/activate
+                    pytest tests/ -v \
+                      --cov=app \
+                      --cov-report=xml:coverage.xml \
+                      --cov-report=term
+                '''
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: '**/test-results/*.xml'
+                }
+            }
+        }
+
+        // ── Stage 4: Build Docker Image ───────────────────────
+        stage('Build Docker Image') {
+            steps {
+                sh '''
+                    docker build \
+                      -t ${ECR_REPO}:${IMAGE_TAG} \
+                      -t ${ECR_REPO}:latest \
+                      .
+                '''
+            }
+        }
+
+        // ── Stage 5: Trivy Image Scan ─────────────────────────
+        stage('Trivy Image Scan') {
+            steps {
+                sh '''
+                    trivy image \
+                      --exit-code 1 \
+                      --severity HIGH,CRITICAL \
+                      --no-progress \
+                      ${ECR_REPO}:${IMAGE_TAG}
+                '''
+            }
+        }
+
+        // ── Stage 6: Push to ECR ──────────────────────────────
+        stage('Push to ECR') {
+            steps {
+                sh '''
+                    aws ecr get-login-password --region ${AWS_REGION} | \
+                      docker login --username AWS --password-stdin \
+                      ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+                    docker push ${ECR_REPO}:${IMAGE_TAG}
+                    docker push ${ECR_REPO}:latest
+                '''
+            }
+        }
+
+        // ── Stage 7: Update Helm Values ───────────────────────
+        stage('Update Helm Values') {
+            steps {
+                sh '''
+                    sed -i "s|tag: .*|tag: \\"${IMAGE_TAG}\\"|" helm/flaskapp/values.yaml
+
+                    git config user.email "jenkins@ci.com"
+                    git config user.name "Jenkins"
+                    git remote set-url origin https://${GITHUB_TOKEN}@github.com/phsangam/flask-app.git
+                    git add helm/flaskapp/values.yaml
+                    git commit -m "ci: update image tag to ${IMAGE_TAG}"
+                    git push origin main
+                '''
+            }
+        }
+
+        // ── Stage 8: ArgoCD Deploy ────────────────────────────
+        stage('ArgoCD Deploy') {
+            steps {
+                sh '''
+                    argocd app sync flask-app \
+                      --server <YOUR_ARGOCD_SERVER> \
+                      --auth-token ${ARGOCD_TOKEN} \
+                      --grpc-web
+
+                    argocd app wait flask-app \
+                      --health \
+                      --timeout 120
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline SUCCESS — Image: ${ECR_REPO}:${IMAGE_TAG}"
+        }
+        failure {
+            echo "Pipeline FAILED — check stage logs above"
+        }
+        always {
+            sh 'docker rmi ${ECR_REPO}:${IMAGE_TAG} || true'
+            cleanWs()
+        }
+    }
+}
